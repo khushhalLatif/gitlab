@@ -1,0 +1,5 @@
+{
+    "gitlab_url": "https://gitlab.com",
+    "access_token": "glpat-XXXXXXXXXXXXXXXX",
+    "group_path": "your-group/subgroup"
+}
