@@ -1,0 +1,76 @@
+# Global configuration
+stages:
+  - build
+  - test
+  - deploy
+
+variables:
+  # Docker & Network (from your screenshot)
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: "/certs"
+  HTTP_PROXY: "http://proxy-na.fiserv.one:8080"
+  HTTPS_PROXY: "http://proxy-na.fiserv.one:8080"
+  NO_PROXY: "localhost,docker,127.0.0.1"
+
+  # Maven specific
+  MAVEN_OPTS: "-Dmaven.repo.local=.m2/repository -Dorg.slf4j.simpleLogger.showDateTime=true"
+  JAVA_IMG: "maven:3.8-openjdk-11"
+  M2SETTINGS: "settings.xml"
+
+# Cache Maven dependencies between jobs to save time
+cache:
+  paths:
+    - .m2/repository
+
+# --- BUILD STAGE ---
+build-artifact:
+  stage: build
+  image: $JAVA_IMG
+  only:
+    - DEV
+    - QA
+    - Release
+    - main
+  artifacts:
+    expire_in: 1 day
+    paths:
+      - target/*.jar
+      - target/*.war
+  script:
+    - echo "Starting build for $CI_COMMIT_REF_NAME"
+    - mvn $MAVEN_OPTS -s $M2SETTINGS clean compile package -DskipTests
+    - echo "Build completed successfully."
+
+# --- TEST STAGE ---
+run-tests:
+  stage: test
+  image: $JAVA_IMG
+  script:
+    - mvn $MAVEN_OPTS -s $M2SETTINGS test
+  artifacts:
+    when: always
+    reports:
+      junit:
+        - target/surefire-reports/TEST-*.xml
+
+# --- DEPLOY STAGE ---
+deploy-to-nexus:
+  stage: deploy
+  image: $JAVA_IMG
+  services:
+    - name: $JAVA_IMG
+      alias: "mvn"
+  only:
+    - Release
+    - main
+  before_script:
+    - export http_proxy=$HTTP_PROXY
+    - export https_proxy=$HTTPS_PROXY
+    - export no_proxy=$NO_PROXY
+  script:
+    - echo "Deploying artifact to Nexus..."
+    - java -version
+    - mvn -s $M2SETTINGS deploy -DskipTests
+    - echo "Done with deploy.."
+  environment:
+    name: production

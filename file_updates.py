@@ -1,58 +1,129 @@
-import os
-from git import Repo
-import xml.etree.ElementTree as ET
+import gitlab
+import pandas as pd
+import base64
+import json
+import re
 
-REPO_URL = "https://oauth2:YOUR_TOKEN@gitlab.com/group/project.git"
-LOCAL_PATH = "repo_clone"
-BRANCH = "dev"
+# =============================
+# LOAD CONFIG
+# =============================
+with open("/mnt/data/config.json") as f:
+    config = json.load(f)
 
-# Text to append
-GITLAB_APPEND_TEXT = "\n# Added by automation\ninclude:\n  - local: custom.yml\n"
+gl = gitlab.Gitlab(
+    url=config["gitlab_url"],
+    private_token=config["access_token"]
+)
 
-# XML element to append
-NEW_XML_TAG = "myElement"
-NEW_XML_VALUE = "myValue"
+BRANCH = "your-branch"
+CI_FILE = ".gitlab-ci.yml"
+EXCEL_FILE = "projects.xlsx"
 
+# =============================
+# NEW VARIABLES (insert first)
+# =============================
+NEW_VARIABLES = [
+    "  NEW_VAR1: value1",
+    "  NEW_VAR2: value2",
+    "  NEW_VAR3: value3",
+    "  NEW_VAR4: value4",
+]
 
-def clone_or_open():
-    if not os.path.exists(LOCAL_PATH):
-        return Repo.clone_from(REPO_URL, LOCAL_PATH)
-    return Repo(LOCAL_PATH)
+# =============================
+# NEW SCRIPT CONTENT
+# =============================
+NEW_SCRIPT = [
+    "    - echo \"New pipeline started\"",
+    "    - echo \"Running new logic\"",
+    "    - echo \"Pipeline complete\"",
+]
 
+# =============================
+# READ EXCEL
+# =============================
+df = pd.read_excel(EXCEL_FILE)
+project_urls = df["Repository URL"].tolist()
 
-def update_gitlab_yml(repo_path):
-    file_path = os.path.join(repo_path, "gitlab.yml")
+# =============================
+# PROCESS EACH PROJECT
+# =============================
+for url in project_urls:
+    try:
+        print(f"\nProcessing: {url}")
 
-    if os.path.exists(file_path):
-        with open(file_path, "a", encoding="utf-8") as f:
-            f.write(GITLAB_APPEND_TEXT)
-        print("✔ Updated gitlab.yml")
+        project_path = url.split("gitlab.com/")[1]
+        project = gl.projects.get(project_path)
 
+        file = project.files.get(
+            file_path=CI_FILE,
+            ref=BRANCH
+        )
 
-def update_pom_xml(repo_path):
-    file_path = os.path.join(repo_path, "pom.xml")
+        content = base64.b64decode(file.content).decode("utf-8")
+        lines = content.split("\n")
 
-    if os.path.exists(file_path):
-        tree = ET.parse(file_path)
-        root = tree.getroot()
+        updated_lines = []
+        i = 0
+        variables_inserted = False
 
-        # Add new element at root level
-        new_element = ET.Element(NEW_XML_TAG)
-        new_element.text = NEW_XML_VALUE
-        root.append(new_element)
+        while i < len(lines):
+            line = lines[i]
 
-        tree.write(file_path, encoding="utf-8", xml_declaration=True)
-        print("✔ Updated pom.xml")
+            # =============================
+            # INSERT VARIABLES (ONLY ONCE)
+            # =============================
+            if not variables_inserted and re.match(r"^variables:\s*$", line.strip()):
+                updated_lines.append(line)
+                updated_lines.extend(NEW_VARIABLES)
+                variables_inserted = True
+                i += 1
+                continue
 
+            # =============================
+            # REPLACE SCRIPT BLOCK
+            # =============================
+            if re.match(r"^\s*script:\s*$", line):
+                indent = len(line) - len(line.lstrip())
+                script_indent = " " * indent
 
-repo = clone_or_open()
-repo.git.checkout(BRANCH)
+                # Add new script header
+                updated_lines.append(script_indent + "script:")
 
-update_gitlab_yml(LOCAL_PATH)
-update_pom_xml(LOCAL_PATH)
+                # Add new script lines
+                updated_lines.extend(NEW_SCRIPT)
 
-repo.git.add(A=True)
-repo.index.commit("Automated update: gitlab.yml + pom.xml")
-repo.remote("origin").push(BRANCH)
+                i += 1
 
-print("✅ Done.")
+                # Skip old script block
+                while i < len(lines):
+                    next_line = lines[i]
+
+                    # Stop skipping when indentation decreases
+                    if next_line.strip() == "":
+                        i += 1
+                        continue
+
+                    next_indent = len(next_line) - len(next_line.lstrip())
+                    if next_indent <= indent:
+                        break
+
+                    i += 1
+
+                continue
+
+            updated_lines.append(line)
+            i += 1
+
+        updated_content = "\n".join(updated_lines)
+
+        file.content = updated_content
+        file.save(
+            branch=BRANCH,
+            commit_message="Update CI: insert variables + replace scripts"
+        )
+
+        print("✅ Updated successfully")
+
+    except Exception as e:
+        print(f"❌ Failed: {url}")
+        print(e)
